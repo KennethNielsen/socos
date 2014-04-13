@@ -229,9 +229,9 @@ def get_queue(sonos):
             "%s%s: %s - %s. From album %s." % (
                 color,
                 idx,
-                track['artist'],
-                track['title'],
-                track['album'],
+                track.creator,
+                track.title,
+                track.album,
             )
         )
 
