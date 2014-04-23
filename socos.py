@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 
+""" socos is a commandline tool for controlling Sonos speakers """
+
 from __future__ import print_function
 
-
-""" socos is a commandline tool for controlling Sonos speakers """
 
 # Will be parsed by setup.py to determine package metadata
 __author__ = 'SoCo team <python-soco @googlegroups.com>'
@@ -16,16 +16,20 @@ import sys
 import shlex
 
 try:
+    # pylint: disable=import-error
     import colorama
-except:
-    colorama = False
+except ImportError:
+    # pylint: disable=invalid-name
+    colorama = None
 
 try:
     import readline
-except:
+except ImportError:
+    # pylint: disable=invalid-name
     readline = None
 
 try:
+    # pylint: disable=redefined-builtin,invalid-name,undefined-variable
     input = raw_input
 except NameError:
     # raw_input has been renamed to input in Python 3
@@ -40,18 +44,18 @@ KNOWN_SPEAKERS = {}
 
 
 def main():
-    name = sys.argv[0]
+    """ main switches between (non-)interactive mode """
     args = sys.argv[1:]
 
     if args:
         # process command and exit
-        process_cmd(name, args)
+        process_cmd(args)
     else:
         # start interactive shell
         shell()
 
 
-def process_cmd(name, args):
+def process_cmd(args):
     """ Processes a single command """
 
     cmd = args.pop(0).lower()
@@ -61,33 +65,13 @@ def process_cmd(name, args):
         err(get_help())
         return False
 
-    req_ip, func = COMMANDS[cmd]
+    func, args = _check_args(cmd, args)
 
-    # check if we operate on a spectifc speaker / group
-    if req_ip:
-        if not CUR_SPEAKER:
-            if not args:
-                err('Please specify a speker IP for "{cmd}".'.format(cmd=cmd))
-                return
-            else:
-                speaker_spec = args.pop(0)
-                sonos = soco.SoCo(speaker_spec)
-                args.insert(0, sonos)
-        else:
-            args.insert(0, CUR_SPEAKER)
-
-    # determine how to call function
-    if isinstance(func, str):
-        sonos = args.pop(0)
-        method = getattr(sonos, func)
-        result = method(*args)
-
-    else:
-        try:
-            result = func(*args)
-        except TypeError as ex:
-            err(ex)
-            return
+    try:
+        result = _call_func(func, args)
+    except TypeError as ex:
+        err(ex)
+        return
 
     # colorama.init() takes over stdout/stderr to give cross-platform colors
     if colorama:
@@ -109,6 +93,41 @@ def process_cmd(name, args):
         colorama.deinit()
 
 
+def _call_func(func, args):
+    """ handles str-based functions and calls appropriately """
+
+    # determine how to call function
+    if isinstance(func, str):
+        sonos = args.pop(0)
+        method = getattr(sonos, func)
+        return method(*args)  # pylint: disable=star-args
+
+    else:
+        return func(*args)  # pylint: disable=star-args
+
+
+def _check_args(cmd, args):
+    """ checks if func is called for a speaker and updates 'args' """
+
+    req_ip, func = COMMANDS[cmd]
+
+    if not req_ip:
+        return func, args
+
+    if not CUR_SPEAKER:
+        if not args:
+            err('Please specify a speaker IP for "{cmd}".'.format(cmd=cmd))
+            return None, None
+        else:
+            speaker_spec = args.pop(0)
+            sonos = soco.SoCo(speaker_spec)
+            args.insert(0, sonos)
+    else:
+        args.insert(0, CUR_SPEAKER)
+
+    return func, args
+
+
 def shell():
     """ Start an interactive shell """
 
@@ -119,11 +138,16 @@ def shell():
 
     while True:
         try:
+            # Not sure why this is necessary, as there is a player_name attr
+            # pylint: disable=no-member
             if CUR_SPEAKER:
                 speaker = CUR_SPEAKER.player_name
                 if hasattr(speaker, 'decode'):
                     speaker = speaker.encode('utf-8')
-                line = input('socos({speaker})> '.format(speaker=speaker))
+                line = input('socos({speaker}|{state})> '.format(
+                    speaker=speaker,
+                    state=state(CUR_SPEAKER).title()
+                ))
             else:
                 line = input('socos> ')
         except EOFError:
@@ -144,7 +168,7 @@ def shell():
             continue
 
         try:
-            process_cmd('', args)
+            process_cmd(args)
         except KeyboardInterrupt:
             err('Keyboard interrupt.')
         except EOFError:
@@ -157,7 +181,7 @@ def complete_command(text, context):
     text is the text to be auto-completed
     context is an index, increased for every call for "text" to get next match
     """
-    matches = list(filter(lambda k: k.startswith(text), COMMANDS.keys()))
+    matches = [cmd for cmd in COMMANDS.keys() if cmd.startswith(text)]
     return matches[context]
 
 
@@ -167,17 +191,17 @@ def adjust_volume(sonos, operator):
     if not factor:
         return False
 
-    volume = sonos.volume
+    vol = sonos.volume
 
-    if (operator[0] == '+'):
-        if (volume + factor) > 100:
+    if operator[0] == '+':
+        if (vol + factor) > 100:
             factor = 1
-        sonos.volume = (volume + factor)
+        sonos.volume = (vol + factor)
         return sonos.volume
-    elif (operator[0] == '-'):
-        if (volume - factor) < 0:
+    elif operator[0] == '-':
+        if (vol - factor) < 0:
             factor = 1
-        sonos.volume = (volume - factor)
+        sonos.volume = (vol - factor)
         return sonos.volume
     else:
         err("Valid operators for volume are + and -")
@@ -214,6 +238,7 @@ def get_queue(sonos):
     """ Show the current queue """
     queue = sonos.get_queue()
 
+    # pylint: disable=invalid-name
     ANSI_BOLD = '\033[1m'
     ANSI_RESET = '\033[0m'
 
@@ -223,7 +248,7 @@ def get_queue(sonos):
     padding = len(str(queue_length))
 
     for idx, track in enumerate(queue, 1):
-        if (idx == current):
+        if idx == current:
             color = ANSI_BOLD
         else:
             color = ANSI_RESET
@@ -240,8 +265,9 @@ def get_queue(sonos):
         )
 
 
-def err(s):
-    print(s, file=sys.stderr)
+def err(message):
+    """ print an error message """
+    print(message, file=sys.stderr)
 
 
 def play_index(sonos, index):
@@ -250,13 +276,15 @@ def play_index(sonos, index):
     try:
         index = int(index) - 1
         if index >= 0 and index < queue_length:
-            current = int(sonos.get_current_track_info()['playlist_position']) - 1
-            if (index != current):
+            position = sonos.get_current_track_info()['playlist_position']
+            current = int(position) - 1
+            if index != current:
                 return sonos.play_from_queue(index)
         else:
             raise ValueError()
     except ValueError():
-        return "Index has to be a integer within the range 1 - %d" % queue_length
+        return "Index has to be a integer within \
+                the range 1 - %d" % queue_length
 
 
 def list_ips():
@@ -288,7 +316,7 @@ def volume(sonos, *args):
     return sonos.volume
 
 
-def exit():
+def exit_shell():
     """ Exit socos """
     sys.exit(0)
 
@@ -330,6 +358,8 @@ def set_speaker(arg):
     if not KNOWN_SPEAKERS:
         list(list_ips())
 
+    # pylint: disable=global-statement,fixme
+    # TODO: this should be refactored into a class with instance-wide state
     global CUR_SPEAKER
     # Set speaker by speaker number as identified by list_ips ...
     if '.' not in arg and arg in KNOWN_SPEAKERS:
@@ -341,7 +371,7 @@ def set_speaker(arg):
 
 def unset_speaker():
     """ resets the current speaker for the shell session """
-    global CUR_SPEAKER
+    global CUR_SPEAKER  # pylint: disable=global-statement
     CUR_SPEAKER = None
 
 
@@ -357,6 +387,7 @@ def get_help():
         doc = doc.split('\n')[0]
         return ' * {cmd:10s} {doc}'.format(cmd=name, doc=doc)
 
+    # pylint: disable=bad-builtin
     texts = ['Available commands:']
     texts += map(_cmd_summary, COMMANDS.items())
     return '\n'.join(texts)
@@ -369,18 +400,18 @@ def get_help():
 COMMANDS = {
     #  cmd         req IP  func
     'list':       (False, list_ips),
-    'partymode':  (True,  'partymode'),
-    'info':       (True,  speaker_info),
-    'play':       (True,  play),
-    'pause':      (True,  'pause'),
-    'stop':       (True,  'stop'),
-    'next':       (True,  play_next),
-    'previous':   (True,  play_previous),
-    'current':    (True,  get_current_track_info),
-    'queue':      (True,  get_queue),
-    'volume':     (True,  volume),
-    'state':      (True,  state),
-    'exit':       (False, exit),
+    'partymode':  (True, 'partymode'),
+    'info':       (True, speaker_info),
+    'play':       (True, play),
+    'pause':      (True, 'pause'),
+    'stop':       (True, 'stop'),
+    'next':       (True, play_next),
+    'previous':   (True, play_previous),
+    'current':    (True, get_current_track_info),
+    'queue':      (True, get_queue),
+    'volume':     (True, volume),
+    'state':      (True, state),
+    'exit':       (False, exit_shell),
     'set':        (False, set_speaker),
     'unset':      (False, unset_speaker),
     'help':       (False, get_help),
