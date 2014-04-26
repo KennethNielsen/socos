@@ -13,6 +13,10 @@ __license__ = 'MIT License'
 
 
 import sys
+from os import path
+from collections import OrderedDict
+import sqlite3
+import json
 import shlex
 
 try:
@@ -37,8 +41,179 @@ except NameError:
 
 import soco
 
+
+# pylint: disable=too-many-instance-attributes
+class MusicLibrary(object):
+    """Class that implements the music library support for socos"""
+
+    def __init__(self):
+        self.connection = None
+        self.cursor = None
+        self.create_statements = [
+            'CREATE TABLE tracks (title text, album text, creator text, '
+            'content text)',
+            'CREATE TABLE albums (title text, creator text, content text)',
+            'CREATE TABLE artists (title text, content text)',
+            'CREATE TABLE playlists (title text, content text)',
+        ]
+        self.drop_statements = [
+            'DROP TABLE tracks', 'DROP TABLE albums', 'DROP TABLE artists',
+            'DROP TABLE playlists'
+        ]
+        self.data_types = ['playlists', 'artists', 'albums', 'tracks']
+        self.cached_searches = OrderedDict()
+        self.cache_length = 10
+        self.print_patters = {
+            u'tracks': '\'{title}\' on \'{album}\' by \'{creator}\'',
+            u'albums': '\'{title}\' by \'{creator}\'',
+            u'artists': '\'{title}\'',
+            u'playlists': '\'{title}\''
+        }
+
+    def _open_db(self):
+        """Open a connection to the db"""
+        if not self.connection:
+            self.connection = sqlite3.connect(self._get_path())
+            self.cursor = self.connection.cursor()
+
+    @staticmethod
+    def _get_path():
+        """Return the platform dependent path for the data base"""
+        out = path.join(path.expanduser('~'), '.config', 'socos',
+                        'musiclib.db')
+        return out
+
+    def index(self, sonos):
+        """Update the local index"""
+        self._open_db()
+        # Drop old tables
+        query = 'SELECT name FROM sqlite_master WHERE type = "table"'
+        self.cursor.execute(query)
+        number_of_tables = len(self.cursor.fetchall())
+        if number_of_tables == 4:
+            yield 'Deleting tables'
+            for drop in self.drop_statements:
+                self.cursor.execute(drop)
+        self.connection.commit()
+
+        # Form new
+        yield 'Creating tables'
+        for create in self.create_statements:
+            self.cursor.execute(create)
+        self.connection.commit()
+
+        for data_type in self.data_types:
+            for string in self._index_single_type(sonos, data_type):
+                yield string
+
+    def _index_single_type(self, sonos, data_type):
+        """Index a single type if data"""
+        fields = self._get_columns(data_type)
+
+        # E.g: INSERT INTO tracks VALUES (?,?,?,?)
+        query = 'INSERT INTO {} VALUES ({})'.format(
+            data_type, ','.join(['?'] * len(fields)))
+
+        # For readability
+        get_ml_inf = sonos.get_music_library_information
+
+        total = get_ml_inf(data_type, 0, 1)['total_matches']
+
+        yield 'Adding: {}'.format(data_type)
+        count = 0
+        while count < total:
+            search = get_ml_inf(data_type, start=count, max_items=1000)
+            for item in search['item_list']:
+                values = [getattr(item, field) for field in
+                          fields[:-1]]
+                values.append(json.dumps(item.to_dict))
+                self.cursor.execute(query, values)
+            self.connection.commit()
+
+            # Status
+            count += search['number_returned']
+            yield '{{: >3}}%  {{: >{0}}} out of {{: >{0}}}'\
+                .format(len(str(total)))\
+                .format(count * 100 / total, count, total)
+
+    def _get_columns(self, table):
+        """Return the names of the columns in the table"""
+        query = 'PRAGMA table_info({})'.format(table)
+        self.cursor.execute(query)
+        # The table descriptions look like: (0, u'title', u'text', 0, None, 0)
+        return [element[1] for element in self.cursor.fetchall()]
+
+    def tracks(self, sonos, *args):
+        """Search for and possibly play tracks"""
+        for string in self._search(sonos, 'tracks', *args):
+            yield string
+
+    def albums(self, sonos, *args):
+        """Search for and possibly play albums"""
+        for string in self._search(sonos, 'albums', *args):
+            yield string
+
+    def artists(self, sonos, *args):
+        """Search for and possibly play all by artists"""
+        for string in self._search(sonos, 'artists', *args):
+            yield string
+
+    def playlists(self, sonos, *args):
+        """Search for and possibly play imported playlists"""
+        for string in self._search(sonos, 'playlists', *args):
+            yield string
+
+    def _search(self, sonos, data_type, *args):
+        """Perform a music library search and possibly play and item"""
+        self._open_db()
+        search_string = args[0]
+        if search_string.count('=') == 0:
+            field = 'title'
+            search = search_string
+        elif search_string.count('=') == 1:
+            field, search = search_string.split('=')
+        else:
+            message = '= signs are not allowed in the search string'
+            raise TypeError(message)
+
+        if (data_type, field, search) in self.cached_searches:
+            results = self.cached_searches[(data_type, field, search)]
+        else:
+            search = search.join(['%', '%'])
+            if field in self._get_columns(data_type)[:-1]:
+                query = 'SELECT * FROM {} WHERE {} LIKE ?'.format(data_type,
+                                                                  field)
+                self.cursor.execute(query, [search])
+                results = self.cursor.fetchall()
+                self.cached_searches[(data_type, field, search)] = results
+                while len(self.cached_searches) > self.cache_length:
+                    self.cached_searches.popitem(last=False)
+            else:
+                message = 'The search field \'{}\' is unknown. Only {} is '\
+                    'allowed'.format(field, self._get_columns(data_type)[:-1])
+                raise TypeError(message)
+
+        if len(args) == 1:
+            for string in self._print_results(data_type, results):
+                yield string
+
+    def _print_results(self, data_type, results):
+        """Print the results"""
+        index_length = len(str(len(results)))
+        for index, item in enumerate(results):
+            item_dict = json.loads(item[-1])
+            for key, value in item_dict.items():
+                if hasattr(value, 'decode'):
+                    item_dict[key] = value.encode('utf-8')
+            number = '({{: >{}}}) '.format(index_length).format(index + 1)
+            # pylint: disable=star-args
+            yield number + self.print_patters[data_type].format(**item_dict)
+
+
 # current speaker (used only in interactive mode)
 CUR_SPEAKER = None
+# Instance of music library class
+MUSIC_LIB = MusicLibrary()
 
 
 def main():
@@ -384,6 +559,11 @@ COMMANDS = {
     'queue':      (True, get_queue),
     'volume':     (True, volume),
     'state':      (True, state),
+    'ml_index':   (True, MUSIC_LIB.index),
+    'ml_tracks':  (True, MUSIC_LIB.tracks),
+    'ml_albums':  (True, MUSIC_LIB.albums),
+    'ml_artists': (True, MUSIC_LIB.artists),
+    'ml_playlists': (True, MUSIC_LIB.playlists),
     'exit':       (False, exit_shell),
     'set':        (False, set_speaker),
     'unset':      (False, unset_speaker),
