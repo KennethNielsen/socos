@@ -596,7 +596,7 @@ def unset_speaker():
     CUR_SPEAKER = None
 
 
-def get_help():
+def get_help(command=None):
     """ Prints a list of commands with short description """
 
     def _cmd_summary(item):
@@ -605,13 +605,20 @@ def get_help():
         if isinstance(func, str):
             func = getattr(soco.SoCo, func)
         doc = getattr(func, '__doc__') or ''
-        doc = doc.split('\n')[0]
-        return ' * {cmd:10s} {doc}'.format(cmd=name, doc=doc)
+        doc = doc.split('\n')[0].lstrip()
+        return ' * {cmd:12s} {doc}'.format(cmd=name, doc=doc)
 
-    # pylint: disable=bad-builtin
-    texts = ['Available commands:']
-    texts += map(_cmd_summary, COMMANDS.items())
-    return '\n'.join(texts)
+    if command and command in COMMANDS:
+        func = COMMANDS[command][1]
+        doc = getattr(func, '__doc__') or ''
+        doc = [line.lstrip() for line in doc.split('\n')]
+        out = '\n'.join(doc)
+    else:
+        # pylint: disable=bad-builtin
+        texts = ['Available commands:']
+        texts += map(_cmd_summary, COMMANDS.items())
+        out = '\n'.join(texts)
+    return out
 
 
 # COMMANDS indexes commands by their name. Each command is a 2-tuple of
