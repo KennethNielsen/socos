@@ -40,6 +40,7 @@ except NameError:
     pass
 
 import soco
+from soco.data_structures import MLTrack, MLAlbum, MLArtist, MLPlaylist
 
 
 # pylint: disable=too-many-instance-attributes
@@ -50,9 +51,9 @@ class MusicLibrary(object):
         self.connection = None
         self.cursor = None
         self.create_statements = [
-            'CREATE TABLE tracks (title text, album text, creator text, '
+            'CREATE TABLE tracks (title text, album text, artist text, '
             'content text)',
-            'CREATE TABLE albums (title text, creator text, content text)',
+            'CREATE TABLE albums (title text, artist text, content text)',
             'CREATE TABLE artists (title text, content text)',
             'CREATE TABLE playlists (title text, content text)',
         ]
@@ -61,6 +62,8 @@ class MusicLibrary(object):
             'DROP TABLE playlists'
         ]
         self.data_types = ['playlists', 'artists', 'albums', 'tracks']
+        self.ml_classes = {'tracks': MLTrack, 'albums': MLAlbum,
+                           'artists': MLArtist, 'playlists': MLPlaylist}
         self.cached_searches = OrderedDict()
         self.cache_length = 10
         self.print_patters = {
@@ -109,6 +112,9 @@ class MusicLibrary(object):
     def _index_single_type(self, sonos, data_type):
         """Index a single type if data"""
         fields = self._get_columns(data_type)
+        # Artist is called creator in the UPnP data structures
+        if 'artist' in fields:
+            fields[fields.index('artist')] = 'creator'
 
         # E.g: INSERT INTO tracks VALUES (?,?,?,?)
         query = 'INSERT INTO {} VALUES ({})'.format(
@@ -145,27 +151,51 @@ class MusicLibrary(object):
 
     def tracks(self, sonos, *args):
         """Search for and possibly play tracks"""
-        for string in self._search(sonos, 'tracks', *args):
+        for string in self._search_and_play(sonos, 'tracks', *args):
             yield string
 
     def albums(self, sonos, *args):
         """Search for and possibly play albums"""
-        for string in self._search(sonos, 'albums', *args):
+        for string in self._search_and_play(sonos, 'albums', *args):
             yield string
 
     def artists(self, sonos, *args):
         """Search for and possibly play all by artists"""
-        for string in self._search(sonos, 'artists', *args):
+        for string in self._search_and_play(sonos, 'artists', *args):
             yield string
 
     def playlists(self, sonos, *args):
         """Search for and possibly play imported playlists"""
-        for string in self._search(sonos, 'playlists', *args):
+        for string in self._search_and_play(sonos, 'playlists', *args):
             yield string
 
-    def _search(self, sonos, data_type, *args):
+    def _search_and_play(self, sonos, data_type, *args):
         """Perform a music library search and possibly play and item"""
         self._open_db()
+        if len(args) < 1:
+            message = 'Search term missing. Can be on the form \'field=text\' '\
+              'or \'text\' e.g. \'artist=Metallica\'. If no field is given '\
+              '\'title\' field is used.'
+            raise TypeError(message)
+        import time
+        t0 = time.time()
+        results = self._search(sonos, data_type, *args)
+        print(time.time() - t0)
+
+        if len(args) == 1:
+            for string in self._print_results(data_type, results):
+                yield string
+        elif len(args) == 3:
+            yield self._play(sonos, data_type, results, *args)
+        else:
+            message = 'Incorrect play syntax, must be \'search action '\
+              'number\' e.g. \'artist=Metallica add 7\'. Action can be '\
+              '\'add\' or \'replace'
+            raise TypeError(message)
+
+    def _search(self, sonos, data_type, *args):
+        """Perform the search"""
+        # Process search term
         search_string = args[0]
         if search_string.count('=') == 0:
             field = 'title'
@@ -176,10 +206,13 @@ class MusicLibrary(object):
             message = '= signs are not allowed in the search string'
             raise TypeError(message)
 
+        # Do the search, if it has not been cached
+        search = search.join(['%', '%'])
         if (data_type, field, search) in self.cached_searches:
+            print('cached')
             results = self.cached_searches[(data_type, field, search)]
         else:
-            search = search.join(['%', '%'])
+            print('searched')
             if field in self._get_columns(data_type)[:-1]:
                 query = 'SELECT * FROM {} WHERE {} LIKE ?'.format(data_type,
                                                                   field)
@@ -192,10 +225,46 @@ class MusicLibrary(object):
                 message = 'The search field \'{}\' is unknown. Only {} is '\
                     'allowed'.format(field, self._get_columns(data_type)[:-1])
                 raise TypeError(message)
+        return results
 
-        if len(args) == 1:
-            for string in self._print_results(data_type, results):
-                yield string
+    def _play(self, sonos, data_type, results, *args):
+        """Play music library item from search"""
+        action, number = args[1:]
+        # Check action
+        if action not in ['add', 'replace']:
+            message = 'Action must be \'add\' or \'replace\''
+            raise TypeError(message)
+
+        # Convert and check number
+        try:
+            number = int(number) - 1
+        except ValueError:
+            raise TypeError('Play number must be parseable as integer')
+        if number not in range(len(results)):
+            if len(results) == 0:
+                message = 'No results to play from'
+            elif len(results) == 1:
+                message = 'Play number can only be 1'
+            else:
+                message = 'Play number has to be in the range from 1 to {}'.\
+                  format(len(results))
+            raise TypeError(message)
+
+        # The last item in the search is the content dict in json
+        item_dict = json.loads(results[number][-1])
+        item = self.ml_classes[data_type].from_dict(item_dict)
+        player_state = state(sonos)
+        if action == 'replace':
+            sonos.clear_queue()
+        sonos.add_to_queue(item)
+        out = 'Added to queue: \'{}\''
+        if action == 'replace' and player_state == 'PLAYING':
+            sonos.play()
+            out = 'Queue replaced with: \'{}\''
+        title = item.title
+        if hasattr(title, 'decode'):
+            title = title.encode('utf-8')
+        return out.format(title)
 
     def _print_results(self, data_type, results):
         """Print the results"""
@@ -255,8 +324,12 @@ def process_cmd(args):
         pass
 
     elif hasattr(result, '__iter__'):
-        for line in result:
-            print(line)
+        try:
+            for line in result:
+                print(line)
+        except TypeError as ex:
+            err(ex)
+            return
 
     else:
         print(result)
