@@ -625,30 +625,30 @@ def get_help(command=None):
 # (requires_ip, function) where function is either a callable, or a
 # method name to be called on a SoCo instance (depending on requires_ip)
 # If requires_ip is False, function must be a callable.
-COMMANDS = {
+COMMANDS = OrderedDict((
     #  cmd         req IP  func
-    'list':       (False, list_ips),
-    'partymode':  (True, 'partymode'),
-    'info':       (True, speaker_info),
-    'play':       (True, play),
-    'pause':      (True, 'pause'),
-    'stop':       (True, 'stop'),
-    'next':       (True, play_next),
-    'previous':   (True, play_previous),
-    'current':    (True, get_current_track_info),
-    'queue':      (True, get_queue),
-    'volume':     (True, volume),
-    'state':      (True, state),
-    'ml_index':   (True, MUSIC_LIB.index),
-    'ml_tracks':  (True, MUSIC_LIB.tracks),
-    'ml_albums':  (True, MUSIC_LIB.albums),
-    'ml_artists': (True, MUSIC_LIB.artists),
-    'ml_playlists': (True, MUSIC_LIB.playlists),
-    'exit':       (False, exit_shell),
-    'set':        (False, set_speaker),
-    'unset':      (False, unset_speaker),
-    'help':       (False, get_help),
-}
+    ('list',         (False, list_ips)),
+    ('partymode',    (True, 'partymode')),
+    ('info',         (True, speaker_info)),
+    ('play',         (True, play)),
+    ('pause',        (True, 'pause')),
+    ('stop',         (True, 'stop')),
+    ('next',         (True, play_next)),
+    ('previous',     (True, play_previous)),
+    ('current',      (True, get_current_track_info)),
+    ('queue',        (True, get_queue)),
+    ('volume',       (True, volume)),
+    ('state',        (True, state)),
+    ('ml_index',     (True, MUSIC_LIB.index)),
+    ('ml_tracks',    (True, MUSIC_LIB.tracks)),
+    ('ml_albums',    (True, MUSIC_LIB.albums)),
+    ('ml_artists',   (True, MUSIC_LIB.artists)),
+    ('ml_playlists', (True, MUSIC_LIB.playlists)),
+    ('exit',         (False, exit_shell)),
+    ('set',          (False, set_speaker)),
+    ('unset',        (False, unset_speaker)),
+    ('help',         (False, get_help)),
+))
 
 
 if __name__ == '__main__':
