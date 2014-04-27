@@ -278,6 +278,10 @@ class MusicLibrary(object):
                 # Perform the search in Sqlite3
                 query = 'SELECT * FROM {} WHERE {} LIKE ?'.format(data_type,
                                                                   field)
+                try:
+                    search = search.decode('utf-8')
+                except AttributeError:
+                    pass
                 self.cursor.execute(query, [search])
                 results = self.cursor.fetchall()
                 # Add results to the cache and reduce cache length if necesary
@@ -704,6 +708,7 @@ def get_help(command=None):
 # If requires_ip is False, function must be a callable.
 COMMANDS = OrderedDict((
     #  cmd         req IP  func
+    # pylint: disable=bad-whitespace
     ('list',         (False, list_ips)),
     ('partymode',    (True, 'partymode')),
     ('info',         (True, speaker_info)),
